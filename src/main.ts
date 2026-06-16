@@ -6,6 +6,8 @@ import { setWorkflowFilePath } from "./workflow";
 import { startSymphonyRuntime } from "./runtime";
 import { ok } from "./result";
 
+let runtime: Awaited<ReturnType<typeof startSymphonyRuntime>> | null = null;
+
 const result = await evaluateCli(Bun.argv.slice(2), {
   fileRegular: async (path) => {
     try {
@@ -26,6 +28,7 @@ const result = await evaluateCli(Bun.argv.slice(2), {
       onEvent: (event) => console.log(JSON.stringify(event)),
     });
     if (!started.ok) return started;
+    runtime = started;
     console.log("Symphony GitHub runtime started. Press Ctrl-C to stop.");
     return ok(["runtime"]);
   },
@@ -34,4 +37,8 @@ const result = await evaluateCli(Bun.argv.slice(2), {
 if (!result.ok) {
   console.error(result.error);
   if (!result.error.includes(ACK_FLAG)) process.exitCode = 1;
+} else {
+  setInterval(() => {
+    // Keep the Bun process alive while timers, app-server runs, and the dashboard operate.
+  }, 2_147_483_647);
 }
