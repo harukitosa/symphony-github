@@ -3,7 +3,11 @@
   "version": "0.1.0",
   "type": "module",
   "private": true,
+  "bin": {
+    "symphony-github": "./src/main.ts"
+  },
   "scripts": {
+    "start": "bun src/main.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   },
