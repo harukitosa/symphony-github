@@ -66,11 +66,21 @@ export async function runAppServer(
       config.codex.approval_policy,
       config.codex.thread_sandbox,
       dynamicTools,
+      opts.onMessage,
     );
     if (!thread.ok) return thread;
 
     const sandboxPolicy = await codexTurnSandboxPolicy(cwdResult.value);
-    const turn = await startTurn(transport, thread.value, prompt, issue, cwdResult.value, config.codex.approval_policy, sandboxPolicy);
+    const turn = await startTurn(
+      transport,
+      thread.value,
+      prompt,
+      issue,
+      cwdResult.value,
+      config.codex.approval_policy,
+      sandboxPolicy,
+      opts.onMessage,
+    );
     if (!turn.ok) return turn;
 
     const turnOptions: TurnCompletionOptions = {
@@ -166,11 +176,8 @@ async function sendInitialize(transport: JsonLineTransport): Promise<Result<void
     },
   });
 
-  const response = await transport.nextJson();
+  const response = await transport.nextResponse(INITIALIZE_ID);
   if (!response.ok) return response;
-  if (response.value.id !== INITIALIZE_ID) {
-    return err({ type: "protocol_error", message: "unexpected initialize response", payload: response.value });
-  }
 
   transport.send({ method: "initialized", params: {} });
   return ok(undefined);
@@ -182,6 +189,7 @@ async function startThread(
   approvalPolicy: string | Record<string, unknown>,
   threadSandbox: string,
   dynamicTools: ReturnType<typeof toolSpecs>,
+  onMessage?: (message: Record<string, unknown>) => void,
 ): Promise<Result<string, AppServerError>> {
   transport.send({
     method: "thread/start",
@@ -193,7 +201,7 @@ async function startThread(
       dynamicTools,
     },
   });
-  const response = await transport.nextJson();
+  const response = await transport.nextResponse(THREAD_START_ID, onMessage);
   if (!response.ok) return response;
   const thread = response.value.result?.thread;
   if (isRecord(thread) && typeof thread.id === "string") return ok(thread.id);
@@ -214,6 +222,7 @@ async function startTurn(
   cwd: string,
   approvalPolicy: string | Record<string, unknown>,
   sandboxPolicy: Record<string, unknown>,
+  onMessage?: (message: Record<string, unknown>) => void,
 ): Promise<Result<string, AppServerError>> {
   transport.send({
     method: "turn/start",
@@ -227,7 +236,7 @@ async function startTurn(
       sandboxPolicy,
     },
   });
-  const response = await transport.nextJson();
+  const response = await transport.nextResponse(TURN_START_ID, onMessage);
   if (!response.ok) return response;
   const turn = response.value.result?.turn;
   if (isRecord(turn) && typeof turn.id === "string") return ok(turn.id);
@@ -435,6 +444,18 @@ class JsonLineTransport {
       } catch {
         if (isJsonLikeLine(line)) onMessage?.({ event: "malformed", payload: line });
       }
+    }
+  }
+
+  async nextResponse(
+    id: number,
+    onMessage?: (message: Record<string, unknown>) => void,
+  ): Promise<Result<Record<string, any>, AppServerError>> {
+    while (true) {
+      const response = await this.nextJson(onMessage);
+      if (!response.ok) return response;
+      if (response.value.id === id) return response;
+      onMessage?.(response.value);
     }
   }
 

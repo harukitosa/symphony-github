@@ -110,6 +110,40 @@ describe("app server", () => {
     }
   });
 
+  test("ignores app-server notifications while waiting for request responses", async () => {
+    const workspaceRoot = join(root, "workspaces");
+    const workspace = join(workspaceRoot, "GH-1001");
+    const codexBinary = join(root, "fake-codex");
+    const traceFile = join(root, "codex-notifications-before-responses.trace");
+    await mkdir(workspace, { recursive: true });
+    await writeFakeCodex(
+      codexBinary,
+      traceFile,
+      [
+        '{"id":1,"result":{}}',
+        '{"method":"configWarning","params":{"summary":"trust warning"}}',
+        '{"id":3,"result":{"turn":{"id":"turn-1001"}}}',
+        '{"method":"turn/completed"}',
+      ],
+      {
+        extraStdoutOn: 2,
+        extraStdoutLine: '{"id":2,"result":{"thread":{"id":"thread-1001"}}}',
+      },
+    );
+    await writeWorkflowFile(workflowPath, {
+      workspace: { root: workspaceRoot },
+      codex: { command: `${codexBinary} app-server` },
+    });
+
+    const updates: unknown[] = [];
+    const result = await runAppServer(workspace, "Handle notification noise", issue, {
+      onMessage: (message) => updates.push(message),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(updates).toContainEqual({ method: "configWarning", params: { summary: "trust warning" } });
+  });
+
   test("exposes only GitHub dynamic tools for GitHub workflows", async () => {
     const workspaceRoot = join(root, "workspaces");
     const workspace = join(workspaceRoot, "GH-1002");
