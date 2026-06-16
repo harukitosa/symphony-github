@@ -211,11 +211,17 @@ describe("observability API", () => {
     expect(dashboard.body).toContain("<title>Symphony</title>");
     expect(dashboard.body).toContain("/dashboard.css");
     expect(dashboard.body).toContain("/api/v1/state");
+    expect(dashboard.body).toContain("Recent Work Log");
+    expect(dashboard.body).toContain('id="running"');
+    expect(dashboard.body).toContain('id="events"');
+    expect(dashboard.body).toContain("Raw state JSON");
 
     const css = await text(handler, "GET", "/dashboard.css", 200);
     expect(css.contentType).toContain("text/css");
     expect(css.cacheControl).toBe("public, max-age=31536000");
     expect(css.body).toContain(".dashboard");
+    expect(css.body).toContain(".summary-card");
+    expect(css.body).toContain(".event-row");
 
     const favicon = await handler(new Request("http://localhost/favicon.png", { method: "GET" }));
     expect(favicon.status).toBe(200);

@@ -328,21 +328,151 @@ function dashboardHtml(): string {
 <body>
   <main class="dashboard" data-state-url="/api/v1/state">
     <header class="dashboard__header">
-      <h1>Symphony</h1>
+      <div>
+        <h1>Symphony</h1>
+        <p id="generated-at">Loading runtime state</p>
+      </div>
       <form method="post" action="/api/v1/refresh">
         <button type="submit">Refresh</button>
       </form>
     </header>
-    <section class="dashboard__panel">
-      <h2>Runtime State</h2>
-      <pre id="state">Loading /api/v1/state</pre>
+    <section class="dashboard__summary" id="summary" aria-label="Runtime counts"></section>
+    <section class="dashboard__grid">
+      <article class="dashboard__panel">
+        <h2>Running</h2>
+        <div id="running" class="issue-list" role="status" aria-live="polite">Loading</div>
+      </article>
+      <article class="dashboard__panel">
+        <h2>Retrying</h2>
+        <div id="retrying" class="issue-list">Loading</div>
+      </article>
+      <article class="dashboard__panel">
+        <h2>Blocked</h2>
+        <div id="blocked" class="issue-list">Loading</div>
+      </article>
+    </section>
+    <section class="dashboard__panel dashboard__panel--wide">
+      <h2>Recent Work Log</h2>
+      <div id="events" class="event-list">Loading</div>
+    </section>
+    <section class="dashboard__panel dashboard__panel--wide">
+      <details>
+        <summary>Raw state JSON</summary>
+        <pre id="state">Loading /api/v1/state</pre>
+      </details>
     </section>
   </main>
   <script>
-    fetch("/api/v1/state").then((response) => response.json()).then((state) => {
-      document.getElementById("state").textContent = JSON.stringify(state, null, 2);
-    }).catch((error) => {
-      document.getElementById("state").textContent = String(error);
+    const stateUrl = document.querySelector('.dashboard').dataset.stateUrl;
+    const text = (value, fallback = 'n/a') => value === null || value === undefined || value === '' ? fallback : String(value);
+    const number = (value) => Number.isFinite(Number(value)) ? Number(value) : 0;
+    const fmt = new Intl.NumberFormat('en-US');
+    const time = (value) => {
+      if (!value) return 'n/a';
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+    };
+    const escapeHtml = (value) => text(value, '').replace(/[&<>"']/g, (char) => ({
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;'
+    })[char]);
+    const messageText = (value) => {
+      if (value === null || value === undefined || value === '') return 'No event yet';
+      if (typeof value === 'string') return value;
+      try {
+        const method = value.method || value.event || value.type;
+        const nested = value.message && (value.message.method || value.message.event || value.message.type);
+        return nested || method || JSON.stringify(value);
+      } catch {
+        return String(value);
+      }
+    };
+    const issueLink = (entry) => {
+      const label = escapeHtml(entry.issue_identifier || entry.issue_id || 'unknown');
+      return entry.issue_url ? '<a href="' + escapeHtml(entry.issue_url) + '">' + label + '</a>' : label;
+    };
+    const empty = (label) => '<div class="empty-state">No ' + label + ' issues</div>';
+    const tokenText = (tokens) => {
+      const total = number(tokens && tokens.total_tokens);
+      const input = number(tokens && tokens.input_tokens);
+      const output = number(tokens && tokens.output_tokens);
+      return fmt.format(total) + ' total, ' + fmt.format(input) + ' in, ' + fmt.format(output) + ' out';
+    };
+    const renderIssueRows = (entries, kind) => {
+      if (!Array.isArray(entries) || entries.length === 0) return empty(kind);
+      return entries.map((entry) => {
+        const meta = kind === 'retrying'
+          ? 'attempt ' + text(entry.attempt, '0') + ' / due ' + time(entry.due_at)
+          : text(entry.state, kind);
+        const detail = kind === 'running'
+          ? tokenText(entry.tokens)
+          : text(entry.error || entry.last_message, 'No error');
+        return '<article class="issue-row issue-row--' + kind + '">' +
+          '<div class="issue-row__main">' +
+            '<strong>' + issueLink(entry) + '</strong>' +
+            '<span>' + escapeHtml(meta) + '</span>' +
+          '</div>' +
+          '<p>' + escapeHtml(detail) + '</p>' +
+        '</article>';
+      }).join('');
+    };
+    const renderEvents = (state) => {
+      const rows = []
+        .concat((state.running || []).map((entry) => ({ kind: 'running', at: entry.last_event_at || entry.started_at, entry })))
+        .concat((state.blocked || []).map((entry) => ({ kind: 'blocked', at: entry.last_event_at || entry.blocked_at, entry })))
+        .concat((state.retrying || []).map((entry) => ({ kind: 'retrying', at: entry.due_at, entry })))
+        .filter((row) => row.at || row.entry.last_message || row.entry.error)
+        .sort((left, right) => new Date(right.at || 0).getTime() - new Date(left.at || 0).getTime())
+        .slice(0, 12);
+      if (rows.length === 0) return '<div class="empty-state">No work log events yet</div>';
+      return rows.map((row) => {
+        const entry = row.entry;
+        const message = entry.error || messageText(entry.last_message || entry.last_event);
+        return '<article class="event-row">' +
+          '<time>' + escapeHtml(time(row.at)) + '</time>' +
+          '<strong>' + issueLink(entry) + '</strong>' +
+          '<span class="badge badge--' + row.kind + '">' + row.kind + '</span>' +
+          '<p>' + escapeHtml(message) + '</p>' +
+        '</article>';
+      }).join('');
+    };
+    const render = (state) => {
+      document.getElementById('state').textContent = JSON.stringify(state, null, 2);
+      if (state.error) {
+        document.getElementById('generated-at').textContent = text(state.error.message, 'Snapshot unavailable');
+        document.getElementById('summary').innerHTML = '';
+        document.getElementById('running').innerHTML = '<div class="empty-state empty-state--error">' + escapeHtml(state.error.message) + '</div>';
+        document.getElementById('retrying').innerHTML = empty('retrying');
+        document.getElementById('blocked').innerHTML = empty('blocked');
+        document.getElementById('events').innerHTML = empty('work log');
+        return;
+      }
+      const counts = state.counts || {};
+      const totals = state.codex_totals || {};
+      document.getElementById('generated-at').textContent = 'Updated ' + time(state.generated_at);
+      document.getElementById('summary').innerHTML = [
+        ['Running', counts.running, 'active workers'],
+        ['Retrying', counts.retrying, 'waiting for retry'],
+        ['Blocked', counts.blocked, 'needs attention'],
+        ['Tokens', totals.total_tokens, 'total codex usage']
+      ].map(([label, value, helper]) =>
+        '<article class="summary-card"><span>' + label + '</span><strong>' + fmt.format(number(value)) + '</strong><small>' + helper + '</small></article>'
+      ).join('');
+      document.getElementById('running').innerHTML = renderIssueRows(state.running, 'running');
+      document.getElementById('retrying').innerHTML = renderIssueRows(state.retrying, 'retrying');
+      document.getElementById('blocked').innerHTML = renderIssueRows(state.blocked, 'blocked');
+      document.getElementById('events').innerHTML = renderEvents(state);
+    };
+    fetch(stateUrl).then((response) => response.json()).then(render).catch((error) => {
+      document.getElementById('generated-at').textContent = 'Failed to load runtime state';
+      document.getElementById('state').textContent = String(error);
+      document.getElementById('running').innerHTML = '<div class="empty-state empty-state--error">' + escapeHtml(error) + '</div>';
+      document.getElementById('retrying').innerHTML = empty('retrying');
+      document.getElementById('blocked').innerHTML = empty('blocked');
+      document.getElementById('events').innerHTML = empty('work log');
     });
   </script>
 </body>
@@ -358,12 +488,21 @@ function staticAsset(path: string): { contentType: string; body: string | Uint8A
 const DASHBOARD_CSS = `:root {
   color-scheme: light dark;
   font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  background: #111318;
-  color: #f4f7fb;
+  background: #101214;
+  color: #eef2f3;
 }
 
 body {
   margin: 0;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
 }
 
 .dashboard {
@@ -386,18 +525,69 @@ body {
   margin: 0;
 }
 
+.dashboard__header p {
+  color: #9ea7ad;
+  font-size: 13px;
+  margin: 4px 0 0;
+}
+
 .dashboard__header button {
-  background: #f4f7fb;
+  background: #eef2f3;
   border: 0;
   border-radius: 6px;
-  color: #111318;
+  color: #101214;
   cursor: pointer;
   font: inherit;
   padding: 8px 12px;
 }
 
+.dashboard__summary {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-bottom: 16px;
+  max-width: 1280px;
+}
+
+.summary-card,
 .dashboard__panel {
-  max-width: 1120px;
+  background: #171a1f;
+  border: 1px solid #30343a;
+  border-radius: 8px;
+}
+
+.summary-card {
+  padding: 14px;
+}
+
+.summary-card span,
+.summary-card small {
+  color: #9ea7ad;
+  display: block;
+  font-size: 12px;
+}
+
+.summary-card strong {
+  display: block;
+  font-size: 26px;
+  margin: 6px 0 2px;
+}
+
+.dashboard__grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  max-width: 1280px;
+}
+
+.dashboard__panel {
+  min-width: 0;
+  padding: 16px;
+}
+
+.dashboard__panel--wide {
+  margin-top: 16px;
+  max-width: 1280px;
 }
 
 .dashboard__panel h2 {
@@ -405,12 +595,141 @@ body {
   margin: 0 0 12px;
 }
 
-.dashboard__panel pre {
-  background: #191d25;
+.issue-list,
+.event-list {
+  display: grid;
+  gap: 10px;
+}
+
+.issue-row,
+.event-row,
+.empty-state {
+  background: #111417;
   border: 1px solid #303642;
-  border-radius: 8px;
+  border-radius: 6px;
+  padding: 12px;
+}
+
+.issue-row {
+  border-left: 3px solid #77808a;
+}
+
+.issue-row--running {
+  border-left-color: #66c2a5;
+}
+
+.issue-row--retrying {
+  border-left-color: #e6b450;
+}
+
+.issue-row--blocked {
+  border-left-color: #ef6f6c;
+}
+
+.issue-row__main,
+.event-row {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+}
+
+.issue-row__main {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.issue-row strong,
+.event-row strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.issue-row span,
+.event-row time {
+  color: #9ea7ad;
+  font-size: 12px;
+}
+
+.issue-row p,
+.event-row p {
+  color: #cbd2d6;
+  font-size: 13px;
+  line-height: 1.45;
+  margin: 8px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.event-row {
+  grid-template-columns: 180px minmax(88px, auto) auto minmax(0, 1fr);
+}
+
+.event-row p {
+  margin: 0;
+}
+
+.badge {
+  border-radius: 999px;
+  border: 1px solid #424850;
+  color: #cbd2d6;
+  font-size: 12px;
+  padding: 2px 8px;
+}
+
+.badge--running {
+  border-color: #487c6e;
+  color: #9bd8c3;
+}
+
+.badge--retrying {
+  border-color: #8a6b24;
+  color: #f1c66d;
+}
+
+.badge--blocked {
+  border-color: #914544;
+  color: #ffaaa8;
+}
+
+.empty-state {
+  color: #9ea7ad;
+}
+
+.empty-state--error {
+  color: #ffaaa8;
+}
+
+details summary {
+  color: #cbd2d6;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+details pre {
+  background: #111417;
+  border: 1px solid #303642;
+  border-radius: 6px;
   overflow: auto;
   padding: 16px;
+}
+
+@media (max-width: 900px) {
+  .dashboard {
+    padding: 16px;
+  }
+
+  .dashboard__summary,
+  .dashboard__grid {
+    grid-template-columns: 1fr;
+  }
+
+  .event-row {
+    align-items: start;
+    grid-template-columns: 1fr auto;
+  }
+
+  .event-row p {
+    grid-column: 1 / -1;
+  }
 }`;
 
 const FAVICON_PNG = new Uint8Array([
